@@ -1,51 +1,144 @@
-# Hàm đọc ảnh từ file (giả sử ảnh là file .ppm hoặc định dạng nhị phân đơn giản)
-def read_image(file_path):
+import struct
+
+# Phát hiện định dạng tệp (BMP hoặc PPM)
+def detect_format(file_path):
+    with open(file_path, 'rb') as f:
+        header = f.read(2)
+        if header == b'BM':  # BMP
+            return "BMP"
+        elif header[:2] == b'P6':  # PPM
+            return "PPM"
+        else:
+            raise ValueError("Định dạng ảnh không được hỗ trợ!")
+
+# Đọc ảnh BMP (24-bit)
+def read_bmp(file_path):
+    with open(file_path, 'rb') as f:
+        header = f.read(14)
+        dib_header = f.read(40)
+
+        # Lấy thông tin cơ bản
+        width = struct.unpack('<I', dib_header[4:8])[0]
+        height = struct.unpack('<I', dib_header[8:12])[0]
+        bit_count = struct.unpack('<H', dib_header[14:16])[0]
+        compression = struct.unpack('<I', dib_header[16:20])[0]
+
+        if bit_count != 24 or compression != 0:
+            raise ValueError("Chỉ hỗ trợ ảnh BMP 24-bit không nén!")
+
+        # Đọc dữ liệu pixel
+        offset = struct.unpack('<I', header[10:14])[0]
+        row_size = (width * 3 + 3) // 4 * 4
+        f.seek(offset)
+        pixels = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                b, g, r = struct.unpack('BBB', f.read(3))
+                row.append((r, g, b))
+            f.read(row_size - width * 3)  # Bỏ padding
+            pixels.append(row)
+        return width, height, pixels
+
+# Đọc ảnh PPM (P6)
+def read_ppm(file_path):
     with open(file_path, 'rb') as f:
         header = f.readline().decode().strip()
-        if header != 'P6':  # Kiểm tra định dạng PPM đơn giản
+        if header != "P6":
             raise ValueError("Chỉ hỗ trợ ảnh PPM dạng P6!")
         dimensions = f.readline().decode().strip().split()
         width, height = map(int, dimensions)
         max_val = int(f.readline().decode().strip())
         if max_val != 255:
-            raise ValueError("Giá trị tối đa không phải 255!")
-        
-        # Đọc dữ liệu điểm ảnh
-        pixels = list(f.read())
+            raise ValueError("Giá trị tối đa của ảnh không phải 255!")
+        pixels = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                r, g, b = struct.unpack('BBB', f.read(3))
+                row.append((r, g, b))
+            pixels.append(row)
         return width, height, pixels
 
-# Hàm ghi ảnh sau xử lý ra file
-def write_image(file_path, width, height, pixels):
+# Ghi ảnh BMP (24-bit)
+def write_bmp(file_path, width, height, pixels):
     with open(file_path, 'wb') as f:
-        f.write(b'P6\n')
-        f.write(f"{width} {height}\n".encode())
-        f.write(b'255\n')
-        f.write(bytearray(pixels))
+        row_size = (width * 3 + 3) // 4 * 4
+        padding = row_size - width * 3
+        pixel_data_size = row_size * height
+        file_size = 14 + 40 + pixel_data_size
 
-# Hàm áp dụng Thresholding
+        # Viết BMP Header
+        f.write(b'BM')
+        f.write(struct.pack('<I', file_size))
+        f.write(b'\x00\x00')
+        f.write(b'\x00\x00')
+        f.write(struct.pack('<I', 54))  # Offset
+
+        # Viết DIB Header
+        f.write(struct.pack('<I', 40))  # Header size
+        f.write(struct.pack('<I', width))
+        f.write(struct.pack('<I', height))
+        f.write(struct.pack('<H', 1))  # Planes
+        f.write(struct.pack('<H', 24))  # Bits per pixel
+        f.write(struct.pack('<I', 0))  # Compression
+        f.write(struct.pack('<I', pixel_data_size))
+        f.write(struct.pack('<I', 2835))  # X pixels per meter
+        f.write(struct.pack('<I', 2835))  # Y pixels per meter
+        f.write(struct.pack('<I', 0))  # Total colors
+        f.write(struct.pack('<I', 0))  # Important colors
+
+        # Viết dữ liệu pixel
+        for row in pixels:
+            for r, g, b in row:
+                f.write(struct.pack('BBB', b, g, r))  # BMP lưu theo thứ tự BGR
+            f.write(b'\x00' * padding)
+
+# Ghi ảnh PPM (P6)
+def write_ppm(file_path, width, height, pixels):
+    with open(file_path, 'wb') as f:
+        # Ghi header
+        f.write(b"P6\n")
+        f.write(f"{width} {height}\n".encode())
+        f.write(b"255\n")
+        # Ghi dữ liệu điểm ảnh
+        for row in pixels:
+            for r, g, b in row:
+                f.write(struct.pack('BBB', r, g, b))
+
+# Áp dụng Thresholding
 def apply_thresholding(width, height, pixels, threshold):
     new_pixels = []
-    for i in range(0, len(pixels), 3):  # 3 bytes cho mỗi pixel RGB
-        # Tính giá trị xám (gray) của pixel
-        gray = int(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2])
-        # So sánh với ngưỡng threshold
-        value = 255 if gray >= threshold else 0
-        new_pixels.extend([value, value, value])  # RGB đều giống nhau (ảnh xám)
+    for row in pixels:
+        new_row = []
+        for r, g, b in row:
+            # Chuyển đổi pixel RGB sang mức xám
+            gray = int(0.299 * r + 0.587 * g + 0.114 * b)
+            # Áp dụng ngưỡng
+            value = 255 if gray > threshold else 0
+            new_row.append((value, value, value))
+        new_pixels.append(new_row)
     return new_pixels
 
-# Chạy thử chương trình
+# Hàm tổng hợp
+def process_image(input_file, output_file, threshold):
+    format_type = detect_format(input_file)
+    if format_type == "BMP":
+        width, height, pixels = read_bmp(input_file)
+        new_pixels = apply_thresholding(width, height, pixels, threshold)
+        write_bmp(output_file, width, height, new_pixels)
+    elif format_type == "PPM":
+        width, height, pixels = read_ppm(input_file)
+        new_pixels = apply_thresholding(width, height, pixels, threshold)
+        write_ppm(output_file, width, height, new_pixels)
+    else:
+        raise ValueError("Định dạng ảnh không được hỗ trợ!")
+
+# Chạy chương trình
 if __name__ == "__main__":
-    # Đường dẫn tới ảnh gốc và ảnh kết quả
-    input_file = "E:/Dowload/moon.ppm"  # Đổi tên file cho phù hợp
-    output_file = "output.ppm"
+    input_file = "E:/Picture/moon.bmp"  # Hoặc input.ppm
+    output_file = "output_threshold.bmp"  # Hoặc output.ppm
+    threshold = 128  # Ngưỡng (giá trị từ 0 đến 255)
     
-    # Đọc ảnh từ file
-    width, height, pixels = read_image(input_file)
-    
-    # Áp dụng thuật toán Thresholding với ngưỡng 128
-    threshold = 128
-    new_pixels = apply_thresholding(width, height, pixels, threshold)
-    
-    # Ghi ảnh sau xử lý ra file
-    write_image(output_file, width, height, new_pixels)
-    print(f"Đã lưu ảnh sau xử lý tại: {output_file}")
+    process_image(input_file, output_file, threshold)
+    print(f"Đã xử lý ảnh và lưu tại {output_file}")
