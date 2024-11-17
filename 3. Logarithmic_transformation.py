@@ -1,17 +1,24 @@
 import struct
 import math
 
-# Hàm đọc ảnh BMP (24-bit)
+# Phát hiện định dạng tệp (BMP hoặc PPM)
+def detect_format(file_path):
+    with open(file_path, 'rb') as f:
+        header = f.read(2)
+        if header == b'BM':  # BMP
+            return "BMP"
+        elif header[:2] == b'P6':  # PPM
+            return "PPM"
+        else:
+            raise ValueError("Định dạng ảnh không được hỗ trợ!")
+
+# Đọc ảnh BMP (24-bit)
 def read_bmp(file_path):
     with open(file_path, 'rb') as f:
-        # Đọc header của BMP
         header = f.read(14)
         dib_header = f.read(40)
 
         # Lấy thông tin cơ bản
-        file_size = struct.unpack('<I', header[2:6])[0]
-        offset = struct.unpack('<I', header[10:14])[0]
-
         width = struct.unpack('<I', dib_header[4:8])[0]
         height = struct.unpack('<I', dib_header[8:12])[0]
         bit_count = struct.unpack('<H', dib_header[14:16])[0]
@@ -20,88 +27,120 @@ def read_bmp(file_path):
         if bit_count != 24 or compression != 0:
             raise ValueError("Chỉ hỗ trợ ảnh BMP 24-bit không nén!")
 
-        # Tìm số byte padding mỗi dòng
+        # Đọc dữ liệu pixel
+        offset = struct.unpack('<I', header[10:14])[0]
         row_size = (width * 3 + 3) // 4 * 4
-        padding = row_size - width * 3
-
-        # Đọc dữ liệu điểm ảnh
         f.seek(offset)
         pixels = []
         for y in range(height):
             row = []
             for x in range(width):
-                b, g, r = struct.unpack('BBB', f.read(3))  # BMP lưu theo thứ tự BGR
+                b, g, r = struct.unpack('BBB', f.read(3))
                 row.append((r, g, b))
-            f.read(padding)  # Bỏ qua padding
+            f.read(row_size - width * 3)  # Bỏ padding
             pixels.append(row)
-
         return width, height, pixels
 
-# Hàm ghi ảnh BMP (24-bit)
+# Đọc ảnh PPM (P6)
+def read_ppm(file_path):
+    with open(file_path, 'rb') as f:
+        header = f.readline().decode().strip()
+        if header != "P6":
+            raise ValueError("Chỉ hỗ trợ ảnh PPM dạng P6!")
+        dimensions = f.readline().decode().strip().split()
+        width, height = map(int, dimensions)
+        max_val = int(f.readline().decode().strip())
+        if max_val != 255:
+            raise ValueError("Giá trị tối đa của ảnh không phải 255!")
+        pixels = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                r, g, b = struct.unpack('BBB', f.read(3))
+                row.append((r, g, b))
+            pixels.append(row)
+        return width, height, pixels
+
+# Ghi ảnh BMP (24-bit)
 def write_bmp(file_path, width, height, pixels):
     with open(file_path, 'wb') as f:
-        # Header BMP
-        file_size = 14 + 40 + height * ((width * 3 + 3) // 4 * 4)
-        offset = 14 + 40
+        row_size = (width * 3 + 3) // 4 * 4
+        padding = row_size - width * 3
+        pixel_data_size = row_size * height
+        file_size = 14 + 40 + pixel_data_size
 
         # Viết BMP Header
         f.write(b'BM')
         f.write(struct.pack('<I', file_size))
-        f.write(b'\x00\x00')  # Reserved
-        f.write(b'\x00\x00')  # Reserved
-        f.write(struct.pack('<I', offset))
+        f.write(b'\x00\x00')
+        f.write(b'\x00\x00')
+        f.write(struct.pack('<I', 54))  # Offset
 
         # Viết DIB Header
-        f.write(struct.pack('<I', 40))  # DIB Header size
+        f.write(struct.pack('<I', 40))  # Header size
         f.write(struct.pack('<I', width))
         f.write(struct.pack('<I', height))
         f.write(struct.pack('<H', 1))  # Planes
         f.write(struct.pack('<H', 24))  # Bits per pixel
         f.write(struct.pack('<I', 0))  # Compression
-        f.write(struct.pack('<I', file_size - offset))  # Image size
+        f.write(struct.pack('<I', pixel_data_size))
         f.write(struct.pack('<I', 2835))  # X pixels per meter
         f.write(struct.pack('<I', 2835))  # Y pixels per meter
-        f.write(struct.pack('<I', 0))  # Colors in color table
-        f.write(struct.pack('<I', 0))  # Important color count
+        f.write(struct.pack('<I', 0))  # Total colors
+        f.write(struct.pack('<I', 0))  # Important colors
 
         # Viết dữ liệu pixel
-        row_size = (width * 3 + 3) // 4 * 4
-        padding = row_size - width * 3
-        for y in range(height):
-            for x in range(width):
-                r, g, b = pixels[y][x]
+        for row in pixels:
+            for r, g, b in row:
                 f.write(struct.pack('BBB', b, g, r))  # BMP lưu theo thứ tự BGR
-            f.write(b'\x00' * padding)  # Thêm padding
+            f.write(b'\x00' * padding)
 
-# Hàm áp dụng Logarithmic Transformation
-def apply_log_transform(width, height, pixels, c):
+# Ghi ảnh PPM (P6)
+def write_ppm(file_path, width, height, pixels):
+    with open(file_path, 'wb') as f:
+        # Ghi header
+        f.write(b"P6\n")
+        f.write(f"{width} {height}\n".encode())
+        f.write(b"255\n")
+        # Ghi dữ liệu điểm ảnh
+        for row in pixels:
+            for r, g, b in row:
+                f.write(struct.pack('BBB', r, g, b))
+
+# Áp dụng Logarithmic Transformation
+def apply_logarithmic_transform(width, height, pixels, c=1):
     new_pixels = []
     for row in pixels:
         new_row = []
         for r, g, b in row:
-            # Áp dụng phép biến đổi logarit: s = c * log(1 + r)
-            r_new = min(255, int(c * math.log(1 + r)))
-            g_new = min(255, int(c * math.log(1 + g)))
-            b_new = min(255, int(c * math.log(1 + b)))
+            # Áp dụng phép biến đổi logarit cho mỗi kênh màu
+            r_new = int(c * math.log(1 + r))
+            g_new = int(c * math.log(1 + g))
+            b_new = int(c * math.log(1 + b))
             new_row.append((r_new, g_new, b_new))
         new_pixels.append(new_row)
     return new_pixels
 
-# Chạy thử chương trình
+# Hàm tổng hợp
+def process_image(input_file, output_file):
+    format_type = detect_format(input_file)
+    c = 255 / math.log(256)  # Hệ số c để đảm bảo đầu ra nằm trong khoảng [0, 255]
+    
+    if format_type == "BMP":
+        width, height, pixels = read_bmp(input_file)
+        new_pixels = apply_logarithmic_transform(width, height, pixels, c)
+        write_bmp(output_file, width, height, new_pixels)
+    elif format_type == "PPM":
+        width, height, pixels = read_ppm(input_file)
+        new_pixels = apply_logarithmic_transform(width, height, pixels, c)
+        write_ppm(output_file, width, height, new_pixels)
+    else:
+        raise ValueError("Định dạng ảnh không được hỗ trợ!")
+
+# Chạy chương trình
 if __name__ == "__main__":
-    # Đường dẫn tới ảnh gốc và ảnh kết quả
-    input_file = "E:/Picture/uni.bmp"  # Đường dẫn file BMP gốc
-    output_file = "output.bmp"
+    input_file = "E:/Picture/uni.bmp"  # Hoặc input.ppm
+    output_file = "output_loga2.bmp"  # Hoặc output.ppm
     
-    # Đọc ảnh từ file
-    width, height, pixels = read_bmp(input_file)
-    
-    # Tính toán hằng số c
-    c = 255 / math.log(256)
-    
-    # Áp dụng thuật toán Logarithmic Transformation
-    new_pixels = apply_log_transform(width, height, pixels, c)
-    
-    # Ghi ảnh sau xử lý ra file
-    write_bmp(output_file, width, height, new_pixels)
-    print(f"Đã lưu ảnh sau xử lý tại: {output_file}")
+    process_image(input_file, output_file)
+    print(f"Đã xử lý ảnh và lưu tại {output_file}")
